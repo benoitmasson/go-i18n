@@ -1,7 +1,9 @@
 module github.com/nicksnyder/go-i18n/v2
 
+go 1.9
+
 require (
-	github.com/BurntSushi/toml v0.3.0
-	golang.org/x/text v0.0.0-20171214130843-f21a4dfb5e38
-	gopkg.in/yaml.v2 v2.2.1
+	github.com/BurntSushi/toml v0.3.1
+	golang.org/x/text v0.3.3
+	gopkg.in/yaml.v2 v2.3.0
 )

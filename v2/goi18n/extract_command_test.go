@@ -2,31 +2,28 @@ package main
 
 import (
 	"bytes"
-	"encoding/json"
 	"io/ioutil"
 	"os"
 	"path/filepath"
-	"reflect"
 	"testing"
-
-	"github.com/nicksnyder/go-i18n/v2/i18n"
 )
 
 func TestExtract(t *testing.T) {
 
 	tests := []struct {
 		name       string
+		fileName   string
 		file       string
-		messages   []*i18n.Message
 		activeFile []byte
 	}{
 		{
 			name:     "no translations",
+			fileName: "file.go",
 			file:     `package main`,
-			messages: nil,
 		},
 		{
-			name: "global declaration",
+			name:     "global declaration",
+			fileName: "file.go",
 			file: `package main
 
 			import "github.com/nicksnyder/go-i18n/v2/i18n"
@@ -35,50 +32,117 @@ func TestExtract(t *testing.T) {
 				ID: "Plural ID",
 			}
 			`,
-			messages: []*i18n.Message{
-				{
-					ID: "Plural ID",
-				},
-			},
 		},
 		{
-			name: "short form id only",
+			name:     "escape newline",
+			fileName: "file.go",
+			file: `package main
+
+			import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+			var hasnewline = &i18n.Message{
+				ID:    "hasnewline",
+				Other: "\nfoo\nbar\\",
+			}
+			`,
+			activeFile: []byte(`hasnewline = "\nfoo\nbar\\"
+`),
+		},
+		{
+			name:     "escape",
+			fileName: "file.go",
+			file: `package main
+
+			import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+			var a = &i18n.Message{
+				ID:    "a",
+				Other: "a \" b",
+			}
+			var b = &i18n.Message{
+				ID:    "b",
+				Other: ` + "`" + `a " b` + "`" + `,
+			}
+			`,
+			activeFile: []byte(`a = "a \" b"
+b = "a \" b"
+`),
+		},
+		{
+			name:     "array",
+			fileName: "file.go",
+			file: `package main
+
+			import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+			var a = []*i18n.Message{
+				{
+					ID:    "a",
+					Other: "a",
+				},
+				{
+					ID:    "b",
+					Other: "b",
+				},
+			}
+			`,
+			activeFile: []byte(`a = "a"
+b = "b"
+`),
+		},
+		{
+			name:     "map",
+			fileName: "file.go",
+			file: `package main
+
+			import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+			var a = map[string]*i18n.Message{
+				"a": {
+					ID:    "a",
+					Other: "a",
+				},
+				"b": {
+					ID:    "b",
+					Other: "b",
+				},
+			}
+			`,
+			activeFile: []byte(`a = "a"
+b = "b"
+`),
+		},
+		{
+			name:     "no extract from test",
+			fileName: "file_test.go",
 			file: `package main
 
 			import "github.com/nicksnyder/go-i18n/v2/i18n"
 
 			func main() {
-				bundle := &i18n.Bundle{}
+				bundle := i18n.NewBundle(language.English)
 				l := i18n.NewLocalizer(bundle, "en")
 				l.Localize(&i18n.LocalizeConfig{MessageID: "Plural ID"})
 			}
 			`,
-			messages: []*i18n.Message{
-				{
-					ID: "Plural ID",
-				},
-			},
 		},
 		{
-			name: "must short form id only",
+			name:     "must short form id only",
+			fileName: "file.go",
 			file: `package main
 
 			import "github.com/nicksnyder/go-i18n/v2/i18n"
 
 			func main() {
-				bundle := &i18n.Bundle{}
+				bundle := i18n.NewBundle(language.English)
 				l := i18n.NewLocalizer(bundle, "en")
 				l.MustLocalize(&i18n.LocalizeConfig{MessageID: "Plural ID"})
 			}
 			`,
-			messages: []*i18n.Message{
-				{
-					ID: "Plural ID",
-				},
-			},
 		},
 		{
-			name: "custom package name",
+			name:     "custom package name",
+			fileName: "file.go",
 			file: `package main
 
 			import bar "github.com/nicksnyder/go-i18n/v2/i18n"
@@ -89,14 +153,10 @@ func TestExtract(t *testing.T) {
 				}
 			}
 			`,
-			messages: []*i18n.Message{
-				{
-					ID: "Plural ID",
-				},
-			},
 		},
 		{
-			name: "exhaustive plural translation",
+			name:     "exhaustive plural translation",
+			fileName: "file.go",
 			file: `package main
 
 			import "github.com/nicksnyder/go-i18n/v2/i18n"
@@ -114,18 +174,6 @@ func TestExtract(t *testing.T) {
 				}
 			}
 			`,
-			messages: []*i18n.Message{
-				{
-					ID:          "Plural ID",
-					Description: "Plural description",
-					Zero:        "Zero translation",
-					One:         "One translation",
-					Two:         "Two translation",
-					Few:         "Few translation",
-					Many:        "Many translation",
-					Other:       "Other translation",
-				},
-			},
 			activeFile: []byte(`["Plural ID"]
 description = "Plural description"
 few = "Few translation"
@@ -137,7 +185,8 @@ zero = "Zero translation"
 `),
 		},
 		{
-			name: "concat id",
+			name:     "concat id",
+			fileName: "file.go",
 			file: `package main
 
 			import "github.com/nicksnyder/go-i18n/v2/i18n"
@@ -150,31 +199,46 @@ zero = "Zero translation"
 				}
 			}
 			`,
-			messages: []*i18n.Message{
-				{
-					ID: "Plural ID",
-				},
-			},
+		},
+		{
+			name:     "global declaration",
+			fileName: "file.go",
+			file: `package main
+
+			import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+			const constID = "ConstantID"
+			
+			var m = &i18n.Message{
+				ID: constID,
+				Other: "ID is a constant",
+			}
+			`,
+			activeFile: []byte(`ConstantID = "ID is a constant"
+`),
+		},
+		{
+			name:     "undefined identifier in composite lit",
+			fileName: "file.go",
+			file: `package main
+
+			import "github.com/nicksnyder/go-i18n/v2/i18n"
+
+			var m = &i18n.LocalizeConfig{
+				Funcs: Funcs,
+			}
+			`,
 		},
 	}
 
 	for _, test := range tests {
-		t.Run(test.name+" messages", func(t *testing.T) {
-			actualMessages, err := extractMessages([]byte(test.file))
-			if err != nil {
-				t.Fatal(err)
-			}
-			if !reflect.DeepEqual(actualMessages, test.messages) {
-				t.Fatalf("file:\n%s\nexpected: %s\n     got: %s", test.file, marshalTest(test.messages), marshalTest(actualMessages))
-			}
-		})
-		t.Run(test.name+" active file", func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
 			indir := mustTempDir("TestExtractCommandIn")
 			defer os.RemoveAll(indir)
 			outdir := mustTempDir("TestExtractCommandOut")
 			defer os.RemoveAll(outdir)
 
-			inpath := filepath.Join(indir, "file.go")
+			inpath := filepath.Join(indir, test.fileName)
 			if err := ioutil.WriteFile(inpath, []byte(test.file), 0666); err != nil {
 				t.Fatal(err)
 			}
@@ -236,12 +300,4 @@ other = "{{.Name}} has {{.UnreadEmailCount}} unread emails."
 	if !bytes.Equal(actual, expected) {
 		t.Fatalf("files not equal\nactual:\n%s\nexpected:\n%s", actual, expected)
 	}
-}
-
-func marshalTest(value interface{}) string {
-	buf, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		panic(err)
-	}
-	return string(buf)
 }

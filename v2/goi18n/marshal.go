@@ -7,13 +7,13 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
-	"github.com/nicksnyder/go-i18n/v2/internal"
+	"github.com/nicksnyder/go-i18n/v2/i18n"
 	"github.com/nicksnyder/go-i18n/v2/internal/plural"
 	"golang.org/x/text/language"
 	yaml "gopkg.in/yaml.v2"
 )
 
-func writeFile(outdir, label string, langTag language.Tag, format string, messageTemplates map[string]*internal.MessageTemplate, sourceLanguage bool) (path string, content []byte, err error) {
+func writeFile(outdir, label string, langTag language.Tag, format string, messageTemplates map[string]*i18n.MessageTemplate, sourceLanguage bool) (path string, content []byte, err error) {
 	v := marshalValue(messageTemplates, sourceLanguage)
 	content, err = marshal(v, format)
 	if err != nil {
@@ -23,7 +23,7 @@ func writeFile(outdir, label string, langTag language.Tag, format string, messag
 	return
 }
 
-func marshalValue(messageTemplates map[string]*internal.MessageTemplate, sourceLanguage bool) interface{} {
+func marshalValue(messageTemplates map[string]*i18n.MessageTemplate, sourceLanguage bool) interface{} {
 	v := make(map[string]interface{}, len(messageTemplates))
 	for id, template := range messageTemplates {
 		if other := template.PluralTemplates[plural.Other]; sourceLanguage && len(template.PluralTemplates) == 1 &&
@@ -49,7 +49,12 @@ func marshalValue(messageTemplates map[string]*internal.MessageTemplate, sourceL
 func marshal(v interface{}, format string) ([]byte, error) {
 	switch format {
 	case "json":
-		return json.MarshalIndent(v, "", "  ")
+		var buf bytes.Buffer
+		enc := json.NewEncoder(&buf)
+		enc.SetEscapeHTML(false)
+		enc.SetIndent("", "  ")
+		err := enc.Encode(v)
+		return buf.Bytes(), err
 	case "toml":
 		var buf bytes.Buffer
 		enc := toml.NewEncoder(&buf)

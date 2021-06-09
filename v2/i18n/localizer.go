@@ -2,10 +2,8 @@ package i18n
 
 import (
 	"fmt"
-
 	"text/template"
 
-	"github.com/nicksnyder/go-i18n/v2/internal"
 	"github.com/nicksnyder/go-i18n/v2/internal/plural"
 	"golang.org/x/text/language"
 )
@@ -24,7 +22,6 @@ type Localizer struct {
 // in the bundle according to the language preferences in langs.
 // It can parse Accept-Language headers as defined in http://www.ietf.org/rfc/rfc2616.txt.
 func NewLocalizer(bundle *Bundle, langs ...string) *Localizer {
-	bundle.init()
 	return &Localizer{
 		bundle: bundle,
 		tags:   parseTags(langs),
@@ -76,11 +73,12 @@ func (e *invalidPluralCountErr) Error() string {
 
 // MessageNotFoundErr is returned from Localize when a message could not be found.
 type MessageNotFoundErr struct {
+	tag       language.Tag
 	messageID string
 }
 
 func (e *MessageNotFoundErr) Error() string {
-	return fmt.Sprintf("message %q not found", e.messageID)
+	return fmt.Sprintf("message %q not found in language %q", e.messageID, e.tag)
 }
 
 type pluralizeErr struct {
@@ -107,7 +105,23 @@ func (l *Localizer) Localize(lc *LocalizeConfig) (string, error) {
 	return msg, err
 }
 
+// Localize returns a localized message.
+func (l *Localizer) LocalizeMessage(msg *Message) (string, error) {
+	return l.Localize(&LocalizeConfig{
+		DefaultMessage: msg,
+	})
+}
+
+// TODO: uncomment this (and the test) when extract has been updated to extract these call sites too.
+// Localize returns a localized message.
+// func (l *Localizer) LocalizeMessageID(messageID string) (string, error) {
+// 	return l.Localize(&LocalizeConfig{
+// 		MessageID: messageID,
+// 	})
+// }
+
 // LocalizeWithTag returns a localized message and the language tag.
+// It may return a best effort localized message even if an error happens.
 func (l *Localizer) LocalizeWithTag(lc *LocalizeConfig) (string, language.Tag, error) {
 	messageID := lc.MessageID
 	if lc.DefaultMessage != nil {
@@ -131,73 +145,63 @@ func (l *Localizer) LocalizeWithTag(lc *LocalizeConfig) (string, language.Tag, e
 			}
 		}
 	}
-	tag, template := l.getTemplate(messageID, lc.DefaultMessage)
+
+	tag, template, err := l.getMessageTemplate(messageID, lc.DefaultMessage)
 	if template == nil {
-		return "", language.Und, &MessageNotFoundErr{messageID: messageID}
-	}
-	pluralForm := l.pluralForm(tag, operands)
-	if pluralForm == plural.Invalid {
-		return "", language.Und, &pluralizeErr{messageID: messageID, tag: tag}
-	}
-	msg, err := template.Execute(pluralForm, templateData, lc.Funcs)
-	if err != nil {
 		return "", language.Und, err
 	}
-	return msg, tag, nil
-}
 
-func (l *Localizer) getTemplate(id string, defaultMessage *Message) (language.Tag, *internal.MessageTemplate) {
-	// Fast path.
-	// Optimistically assume this message id is defined in each language.
-	fastTag, template := l.matchTemplate(id, defaultMessage, l.bundle.matcher, l.bundle.tags)
-	if template != nil {
-		return fastTag, template
-	}
-
-	if len(l.bundle.tags) <= 1 {
-		return l.bundle.DefaultLanguage, nil
-	}
-
-	// Slow path.
-	// We didn't find a translation for the tag suggested by the default matcher
-	// so we need to create a new matcher that contains only the tags in the bundle
-	// that have this message.
-	foundTags := make([]language.Tag, 0, len(l.bundle.messageTemplates)+1)
-	foundTags = append(foundTags, l.bundle.DefaultLanguage)
-
-	for t, templates := range l.bundle.messageTemplates {
-		template := templates[id]
-		if template == nil || template.Other == "" {
-			continue
+	pluralForm := l.pluralForm(tag, operands)
+	msg, err2 := template.Execute(pluralForm, templateData, lc.Funcs)
+	if err2 != nil {
+		if err == nil {
+			err = err2
 		}
-		foundTags = append(foundTags, t)
-	}
 
-	return l.matchTemplate(id, defaultMessage, language.NewMatcher(foundTags), foundTags)
+		// Attempt to fallback to "Other" pluralization in case translations are incomplete.
+		if pluralForm != plural.Other {
+			msg2, err3 := template.Execute(plural.Other, templateData, lc.Funcs)
+			if err3 == nil {
+				msg = msg2
+			}
+		}
+	}
+	return msg, tag, err
 }
 
-func (l *Localizer) matchTemplate(id string, defaultMessage *Message, matcher language.Matcher, tags []language.Tag) (language.Tag, *internal.MessageTemplate) {
-	_, i, _ := matcher.Match(l.tags...)
-	tag := tags[i]
-	templates := l.bundle.messageTemplates[tag]
-	if templates != nil && templates[id] != nil {
-		return tag, templates[id]
+func (l *Localizer) getMessageTemplate(id string, defaultMessage *Message) (language.Tag, *MessageTemplate, error) {
+	_, i, _ := l.bundle.matcher.Match(l.tags...)
+	tag := l.bundle.tags[i]
+	mt := l.bundle.getMessageTemplate(tag, id)
+	if mt != nil {
+		return tag, mt, nil
 	}
-	if tag == l.bundle.DefaultLanguage && defaultMessage != nil {
-		return tag, internal.NewMessageTemplate(defaultMessage)
+
+	if tag == l.bundle.defaultLanguage {
+		if defaultMessage == nil {
+			return language.Und, nil, &MessageNotFoundErr{tag: tag, messageID: id}
+		}
+		return tag, NewMessageTemplate(defaultMessage), nil
 	}
-	return tag, nil
+
+	// Fallback to default language in bundle.
+	mt = l.bundle.getMessageTemplate(l.bundle.defaultLanguage, id)
+	if mt != nil {
+		return l.bundle.defaultLanguage, mt, &MessageNotFoundErr{tag: tag, messageID: id}
+	}
+
+	// Fallback to default message.
+	if defaultMessage == nil {
+		return language.Und, nil, &MessageNotFoundErr{tag: tag, messageID: id}
+	}
+	return l.bundle.defaultLanguage, NewMessageTemplate(defaultMessage), &MessageNotFoundErr{tag: tag, messageID: id}
 }
 
 func (l *Localizer) pluralForm(tag language.Tag, operands *plural.Operands) plural.Form {
 	if operands == nil {
 		return plural.Other
 	}
-	pluralRule := l.bundle.pluralRules.Rule(tag)
-	if pluralRule == nil {
-		return plural.Invalid
-	}
-	return pluralRule.PluralFormFunc(operands)
+	return l.bundle.pluralRules.Rule(tag).PluralFormFunc(operands)
 }
 
 // MustLocalize is similar to Localize, except it panics if an error happens.
